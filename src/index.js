@@ -2,9 +2,11 @@
  * SKT calendar QR setup
  * - QR links to this Worker URL.
  * - The Worker calculates the base date using Korea time (Asia/Seoul).
- * - It generates one .ics file containing two calendar events:
- *   D+190: [SKT] 요금제 변경 가능일
- *   D+555: [SKT] 요금할인 신청 가능일
+ * - Two customer types, two different schedules:
+ *     subsidy    (공시지원금 고객): D+190, D+555
+ *     agreement  (선택약정 고객):   D+90 only
+ * - Each type gets its own "삼성캘린더에 추가하기" button producing a
+ *   separate .ics file (?plan=subsidy or ?plan=agreement).
  *
  * Deploy on Cloudflare Workers.
  */
@@ -16,49 +18,85 @@ const CONTACT_NUMBER = "010-8335-7577";
 const EVENT_UTC_HOUR = 1;
 const EVENT_DURATION_MINUTES = 30;
 
-const EVENTS = [
-  {
-    offsetDays: 190,
-    title: "[SKT] 요금제 변경 가능일",
-    description:
+const PLANS = {
+  subsidy: {
+    label: "공시지원금 고객",
+    lead: "공시지원금으로 가입하신 경우의 일정입니다.",
+    events: [
+      {
+        offsetDays: 190,
+        title: "[SKT] 요금제 변경 가능일",
+        description:
 `오늘은 SKT 요금제 변경 가능일입니다.
 
 요금제 변경이 필요하시면 114 또는 매장 방문으로 문의해주세요.
 
 문의번호: ${CONTACT_NUMBER}`,
-  },
-  {
-    offsetDays: 555,
-    title: "[SKT] 요금할인 신청 가능일",
-    description:
+      },
+      {
+        offsetDays: 555,
+        title: "[SKT] 요금할인 신청 가능일",
+        description:
 `오늘은 SKT 요금할인 신청 가능일입니다.
 
 요금할인 신청이 필요하시면 114 또는 매장 방문으로 문의해주세요.
 
 문의번호: ${CONTACT_NUMBER}`,
+      },
+    ],
   },
-];
+  agreement: {
+    label: "선택약정 고객",
+    lead: "선택약정으로 가입하신 경우의 일정입니다.",
+    events: [
+      {
+        offsetDays: 90,
+        title: "[SKT] 선택약정 관련 확인 안내일",
+        description:
+`오늘은 SKT 선택약정 관련 확인이 필요한 시점입니다.
+
+자세한 내용은 114 또는 매장 방문으로 문의해주세요.
+
+문의번호: ${CONTACT_NUMBER}`,
+      },
+    ],
+  },
+};
+
+const DEFAULT_PLAN = "subsidy";
 
 export default {
   async fetch(request) {
     const url = new URL(request.url);
 
     if (url.pathname === "/calendar.ics") {
+      const plan = getPlan(url);
       const baseDate = getBaseDateFromUrlOrKstToday(url);
-      const ics = buildCalendarIcs(baseDate);
+      const ics = buildCalendarIcs(baseDate, plan);
       return new Response(ics, {
         headers: {
           "Content-Type": "text/calendar; charset=utf-8",
-          "Content-Disposition": `attachment; filename="skt-calendar-${baseDate}.ics"`,
+          "Content-Disposition": `attachment; filename="skt-calendar-${plan}-${baseDate}.ics"`,
           "Cache-Control": "no-store, no-cache, must-revalidate, max-age=0",
         },
       });
     }
 
     const baseDate = kstTodayYmd();
-    const rows = EVENTS.map(event => {
-      const target = addDays(baseDate, event.offsetDays);
-      return `<li><b>D+${event.offsetDays}</b> ${escapeHtml(target)} · ${escapeHtml(event.title)}</li>`;
+
+    const sections = Object.entries(PLANS).map(([planId, plan]) => {
+      const rows = plan.events.map(event => {
+        const target = addDays(baseDate, event.offsetDays);
+        return `<li><b>D+${event.offsetDays}</b> ${escapeHtml(target)} · ${escapeHtml(event.title)}</li>`;
+      }).join("");
+
+      return `
+      <section class="plan-card">
+        <h2>${escapeHtml(plan.label)}</h2>
+        <p class="lead">${escapeHtml(plan.lead)}</p>
+        <ul>${rows}</ul>
+        <a class="btn" href="/calendar.ics?plan=${planId}&base=${encodeURIComponent(baseDate)}">${escapeHtml(plan.label)} 캘린더에 추가하기</a>
+      </section>`;
     }).join("");
 
     const html = `<!doctype html>
@@ -90,16 +128,15 @@ export default {
       margin: 0 auto;
       min-height: 100vh;
       padding: 28px 18px;
-      display: flex;
-      align-items: center;
     }
-    .card {
+    .top-card {
       width: 100%;
       background: var(--card);
       border: 1px solid var(--border);
       border-radius: 24px;
-      padding: 26px 22px 22px;
+      padding: 26px 22px 20px;
       box-shadow: 0 12px 30px rgba(15, 23, 42, 0.08);
+      margin-bottom: 14px;
     }
     .badge {
       display: inline-flex;
@@ -117,8 +154,8 @@ export default {
       line-height: 1.25;
       letter-spacing: -0.04em;
     }
-    .lead {
-      margin: 0 0 18px;
+    .top-card .lead {
+      margin: 0;
       color: var(--muted);
       font-size: 15px;
     }
@@ -127,7 +164,7 @@ export default {
       border: 1px solid var(--border);
       border-radius: 16px;
       padding: 14px;
-      margin: 16px 0;
+      margin: 16px 0 0;
       font-size: 15px;
     }
     .datebox b {
@@ -135,11 +172,29 @@ export default {
       margin-bottom: 4px;
       font-size: 16px;
     }
+    .plan-card {
+      background: var(--card);
+      border: 1px solid var(--border);
+      border-radius: 24px;
+      padding: 22px 20px 20px;
+      box-shadow: 0 12px 30px rgba(15, 23, 42, 0.08);
+      margin-bottom: 14px;
+    }
+    .plan-card h2 {
+      margin: 0 0 6px;
+      font-size: 19px;
+      letter-spacing: -0.03em;
+    }
+    .plan-card .lead {
+      margin: 0 0 14px;
+      color: var(--muted);
+      font-size: 14px;
+    }
     ul {
       padding-left: 20px;
-      margin: 12px 0 20px;
+      margin: 0 0 18px;
     }
-    li { margin: 8px 0; }
+    li { margin: 8px 0; font-size: 15px; }
     .btn {
       display: block;
       width: 100%;
@@ -150,8 +205,7 @@ export default {
       color: #fff;
       text-decoration: none;
       font-weight: 800;
-      font-size: 17px;
-      margin-top: 8px;
+      font-size: 16px;
     }
     .note {
       margin: 14px 0 0;
@@ -159,9 +213,11 @@ export default {
       color: var(--muted);
     }
     .small {
-      margin-top: 18px;
-      padding-top: 16px;
-      border-top: 1px solid var(--border);
+      margin-top: 4px;
+      padding: 16px 18px;
+      border-radius: 18px;
+      background: rgba(255,255,255,.72);
+      border: 1px solid var(--border);
       font-size: 12px;
       color: var(--muted);
     }
@@ -169,26 +225,24 @@ export default {
 </head>
 <body>
   <main class="wrap">
-    <section class="card">
+    <section class="top-card">
       <div class="badge">${escapeHtml(STORE_NAME)}</div>
       <h1>개통 후 꼭 챙길 일정을<br>캘린더에 저장하세요</h1>
-      <p class="lead">QR을 스캔한 오늘 한국시간 기준으로 190일 뒤, 555일 뒤 일정을 자동 계산합니다.</p>
-
+      <p class="lead">가입 유형에 맞는 버튼을 눌러 캘린더에 일정을 추가해주세요.</p>
       <div class="datebox">
         <b>기준일: ${escapeHtml(baseDate)}</b>
         <span>한국시간 기준으로 계산됩니다.</span>
       </div>
-
-      <ul>${rows}</ul>
-
-      <a class="btn" href="/calendar.ics?base=${encodeURIComponent(baseDate)}">삼성캘린더에 추가하기</a>
-      <p class="note">버튼을 누른 뒤 삼성캘린더가 열리면 저장을 눌러주세요.</p>
-
-      <div class="small">
-        문의번호: ${escapeHtml(CONTACT_NUMBER)}<br>
-        일정 알림: 하루 전 / 당일 오전 10시
-      </div>
     </section>
+
+    ${sections}
+
+    <p class="note">버튼을 누른 뒤 삼성캘린더가 열리면 저장을 눌러주세요.</p>
+
+    <div class="small">
+      문의번호: ${escapeHtml(CONTACT_NUMBER)}<br>
+      일정 알림: 하루 전 / 당일 오전 10시
+    </div>
   </main>
 </body>
 </html>`;
@@ -201,6 +255,11 @@ export default {
     });
   },
 };
+
+function getPlan(url) {
+  const plan = url.searchParams.get("plan");
+  return Object.prototype.hasOwnProperty.call(PLANS, plan) ? plan : DEFAULT_PLAN;
+}
 
 function getBaseDateFromUrlOrKstToday(url) {
   const base = url.searchParams.get("base");
@@ -235,9 +294,10 @@ function toYmd(dt) {
   return `${y}-${m}-${d}`;
 }
 
-function buildCalendarIcs(baseDate) {
+function buildCalendarIcs(baseDate, planId) {
+  const plan = PLANS[planId] || PLANS[DEFAULT_PLAN];
   const nowStamp = utcStamp(new Date());
-  const eventBlocks = EVENTS.map(event => {
+  const eventBlocks = plan.events.map(event => {
     const target = addDays(baseDate, event.offsetDays);
     const [y, m, d] = target.split("-").map(Number);
 
@@ -246,7 +306,7 @@ function buildCalendarIcs(baseDate) {
 
     return [
       "BEGIN:VEVENT",
-      `UID:skt-${baseDate}-d${event.offsetDays}@skt-chilgok-center`,
+      `UID:skt-${planId}-${baseDate}-d${event.offsetDays}@skt-chilgok-center`,
       `DTSTAMP:${nowStamp}`,
       `CREATED:${nowStamp}`,
       `LAST-MODIFIED:${nowStamp}`,
