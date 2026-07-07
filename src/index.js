@@ -50,7 +50,7 @@ const PLANS = {
     lead: "선택약정으로 가입하신 경우의 일정입니다.",
     events: [
       {
-        offsetDays: 90,
+        offsetDays: 190,
         title: "[SKT] 선택약정 관련 확인 안내일",
         description:
 `오늘은 SKT 선택약정 관련 확인이 필요한 시점입니다.
